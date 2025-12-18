@@ -1,6 +1,8 @@
+import asyncio
 import subprocess
 import sys
-from typing import List
+import time
+from typing import List, Tuple
 
 
 class ParallelPytestRunner:
@@ -60,10 +62,33 @@ class ParallelPytestRunner:
             chunks.pop()
         
         return chunks
+    
+
+    async def run_chunk(self, chunk_id: int, tests: List[str]) -> Tuple[int, str, str]:
+        """Run a single chunk of tests asynchronously"""
+        print(f"Chunk Number: {chunk_id}, Starting {len(tests)} tests...")
+
+        # Run pytest with the specific test items
+        cmd = ["pytest", "-v"] + tests + self.pytest_args
+
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+
+        stdout, stderr = await process.communicate()
+
+        if process.returncode != 0:
+            print(f"Chunk {chunk_id} failed to process")
+
+        return process.returncode, stdout.decode(), stderr.decode()
 
 
 if __name__ == "__main__":
     runner = ParallelPytestRunner(pytest_args=['tests/'])
     tests = runner.collect_tests()
     chunks = runner.chunk_tests(tests)
-    print(chunks)
+
+    for i, chunk in enumerate(chunks, 1):
+        returncode, stdout, stderr = asyncio.run(runner.run_chunk(i, chunk))
