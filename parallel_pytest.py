@@ -1,6 +1,7 @@
 import asyncio
 import subprocess
 import sys
+import time
 from typing import List, Tuple
 
 
@@ -124,11 +125,30 @@ class ParallelPytestRunner:
             return 1
 
 
+    def run(self):
+        """Main entry point"""
+        tests = self.collect_tests()
+        
+        if not tests:
+            print("No tests collected")
+            return 0
+        
+        test_chunks = self.chunk_tests(tests)
+        
+        start_time = time.time()
+
+        exit_code = asyncio.run(self.run_all_chunks(test_chunks))
+        if exit_code == 0:
+            print(f"\n{'All tests passed!'}")
+        else:
+            print(f"\n{'Some tests failed!'}")
+
+        total_time = time.time() - start_time
+        print(f"\nTotal time: {total_time:.2f}s")
+        
+        return exit_code
+
 
 if __name__ == "__main__":
     runner = ParallelPytestRunner(pytest_args=['tests/'])
-    tests = runner.collect_tests()
-    chunks = runner.chunk_tests(tests)
-    exit_code = asyncio.run(runner.run_all_chunks(chunks))
-
-    print(f"\n{'All tests passed!' if exit_code == 0 else 'Some tests failed!'}")
+    runner.run()
