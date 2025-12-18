@@ -1,7 +1,6 @@
 import asyncio
 import subprocess
 import sys
-import time
 from typing import List, Tuple
 
 
@@ -16,7 +15,7 @@ class ParallelPytestRunner:
 
 
     def collect_tests(self) -> List[str]:
-        print("Collecting Tests from Pytest...")
+        print("Collecting tests from Pytest...")
 
         # Get list of all tests from pytest they can be divided into parallel chunks
         cmd = ["pytest", "--collect-only", "-q"] + self.pytest_args
@@ -83,12 +82,53 @@ class ParallelPytestRunner:
             print(f"Chunk {chunk_id} failed to process")
 
         return process.returncode, stdout.decode(), stderr.decode()
+    
+
+    async def run_all_chunks(self, test_chunks: List[List[str]]):
+        """Run all test chunks concurrently"""
+        print(f"\nRunning {len(test_chunks)} test chunks...\n")
+
+        tasks = []
+        for i, chunk in enumerate(test_chunks):
+            tasks.append(self.run_chunk(i, chunk))
+
+        results = await asyncio.gather(*tasks)
+
+        print("\nResults Summary:\n")
+
+        all_passed = True
+
+        for i, result in enumerate(results, 1):
+            returncode, stdout, stderr = result
+            
+            if returncode == 0:
+                status = "PASSED"
+            else:
+                status = "FAILED"
+                all_passed = False
+            
+            print(f"Chunk {i}: {status}")
+            
+            if returncode != 0:
+                print(f"\n--- Chunk {i} Output ---")
+                print(stdout)
+                
+                if stderr:
+                    print(f"--- Chunk {i} Errors ---")
+                    print(stderr)
+
+        # return exit code
+        if all_passed:
+            return 0
+        else:
+            return 1
+
 
 
 if __name__ == "__main__":
     runner = ParallelPytestRunner(pytest_args=['tests/'])
     tests = runner.collect_tests()
     chunks = runner.chunk_tests(tests)
+    exit_code = asyncio.run(runner.run_all_chunks(chunks))
 
-    for i, chunk in enumerate(chunks, 1):
-        returncode, stdout, stderr = asyncio.run(runner.run_chunk(i, chunk))
+    print(f"\n{'All tests passed!' if exit_code == 0 else 'Some tests failed!'}")
