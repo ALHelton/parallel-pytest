@@ -38,9 +38,32 @@ class ParallelPytestRunner:
                 tests.append(test_item)
 
         return tests
+    
+    
+    def chunk_tests(self, tests: List[str]) -> List[List[str]]:
+        """Split tests into roughly equal chunks"""
+        if not tests:
+            return []
+        
+        # Divide tests evenly across chunks, minimum 1 test per chunk
+        chunk_size = max(1, len(tests) // self.chunks)
+        chunks = []
+
+        for i in range(0, len(tests), chunk_size):
+            chunk = tests[i:i + chunk_size]
+            if chunk:
+                chunks.append(chunk)
+
+        # If there are more chunks than requested caused by rounding, merge the last ones
+        while len(chunks) > self.chunks:
+            chunks[-2].extend(chunks[-1])
+            chunks.pop()
+        
+        return chunks
 
 
 if __name__ == "__main__":
     runner = ParallelPytestRunner(pytest_args=['tests/'])
     tests = runner.collect_tests()
-    print(tests)
+    chunks = runner.chunk_tests(tests)
+    print(chunks)
