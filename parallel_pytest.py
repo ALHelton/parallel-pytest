@@ -1,4 +1,5 @@
 import asyncio
+import re
 import subprocess
 import sys
 import time
@@ -16,8 +17,6 @@ class ParallelPytestRunner:
 
 
     def collect_tests(self) -> List[str]:
-        print("Collecting tests from Pytest...")
-
         # Get list of all tests from pytest they can be divided into parallel chunks
         cmd = ["pytest", "--collect-only", "-q"] + self.pytest_args
 
@@ -25,7 +24,10 @@ class ParallelPytestRunner:
         collected = subprocess.run(cmd, capture_output=True, text=True)
 
         if collected.returncode  != 0 and collected.returncode != 5:
-            print(f"Error Collecting Tests:\n{collected.stderr}")
+            if len(collected.stderr) > 0:
+                print(f"Error Collecting Tests:\n{collected.stderr}")
+            else:
+                print("Error Collecting Tests. Process Exited.")
             sys.exit(1)
 
 
@@ -64,12 +66,11 @@ class ParallelPytestRunner:
         return chunks
     
 
-    async def run_chunk(self, chunk_id: int, tests: List[str]) -> Tuple[int, str, str]:
+    async def run_chunk(self, tests: List[str]) -> Tuple[int, str, str]:
         """Run a single chunk of tests asynchronously"""
-        print(f"Chunk Number: {chunk_id}, Starting {len(tests)} tests...")
 
         # Run pytest with the specific test items
-        cmd = ["pytest", "-v"] + tests + self.pytest_args
+        cmd = ["pytest", "-q", "--color=yes"] + tests
 
         process = await asyncio.create_subprocess_exec(
             *cmd,
@@ -79,51 +80,86 @@ class ParallelPytestRunner:
 
         stdout, stderr = await process.communicate()
 
-        if process.returncode != 0:
-            print(f"Chunk {chunk_id} failed to process")
-
         return process.returncode, stdout.decode(), stderr.decode()
     
 
     async def run_all_chunks(self, test_chunks: List[List[str]]):
         """Run all test chunks concurrently"""
-        print(f"\nRunning {len(test_chunks)} test chunks...\n")
 
         tasks = []
-        for i, chunk in enumerate(test_chunks):
-            tasks.append(self.run_chunk(i, chunk))
+        for chunk in test_chunks:
+            tasks.append(self.run_chunk(chunk))
 
         results = await asyncio.gather(*tasks)
 
-        print("\nResults Summary:\n")
-
         all_passed = True
+        failure_details = []
+        all_summaries = []
+        total_tests = 0
 
-        for i, result in enumerate(results, 1):
-            returncode, stdout, stderr = result
-            
-            if returncode == 0:
-                status = "PASSED"
-            else:
-                status = "FAILED"
-                all_passed = False
-            
-            print(f"Chunk {i}: {status}")
+        for result in results:
+            returncode, stdout, _ = result
+
+            # Look for passing tests in output
+            match = re.search(r'(\d+) passed', stdout)
+            if match:
+                total_tests += int(match.group(1))
             
             if returncode != 0:
-                print(f"\n--- Chunk {i} Output ---")
-                print(stdout)
+                all_passed = False
                 
-                if stderr:
-                    print(f"--- Chunk {i} Errors ---")
-                    print(stderr)
+                # Extract just the failure content
+                if 'FAILURES' in stdout:
+                    start = stdout.find('FAILURES')
+                    end = stdout.find('short test summary')
+                    if end != -1:
+                        content = stdout[start:end].strip()
+                        
+                        # Remove lines with FAILURES or lines with multiple =
+                        lines = []
+                        for line in content.split('\n'):
+                            # Skip if line contains FAILURES or has 3+ consecutive =
+                            if 'FAILURES' not in line and '===' not in line:
+                                lines.append(line)
+                        
+                        failure_details.append('\n'.join(lines))
 
-        # return exit code
+                # Extract short test summary
+                if 'short test summary' in stdout:
+                    summary_start = stdout.find('short test summary')
+                    # Find where summary ends (usually at a line of ===)
+                    remaining = stdout[summary_start:]
+                    summary_lines = []
+                    for line in remaining.split('\n')[1:]:  # Skip the header line
+                        if line.strip() and '===' not in line:
+                            summary_lines.append(line)
+                        elif '===' in line:
+                            break
+                    if summary_lines:
+                        all_summaries.extend(summary_lines)
+
+
         if all_passed:
+            # Green text for success
+            green = '\033[32m'
+            reset = '\033[0m'
+            print(f"{green}{total_tests} passed{reset}")
             return 0
+        
         else:
-            return 1
+            # Print failures
+            for details in failure_details:
+                print("\n"+details)
 
+            # Print summary
+            if all_summaries:
+                print("\n\nShort test summary info\n")
+                for summary in all_summaries:
+                    if "passed" in summary or "failed" in summary:
+                        break
+                    print(summary)
+            
+            return 1
 
     def run(self):
         """Main entry point"""
@@ -138,10 +174,6 @@ class ParallelPytestRunner:
         start_time = time.time()
 
         exit_code = asyncio.run(self.run_all_chunks(test_chunks))
-        if exit_code == 0:
-            print(f"\n{'All tests passed!'}")
-        else:
-            print(f"\n{'Some tests failed!'}")
 
         total_time = time.time() - start_time
         print(f"\nTotal time: {total_time:.2f}s")
