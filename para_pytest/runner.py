@@ -178,7 +178,10 @@ class ParaPytestRunner:
                     if test['outcome'] == 'failed':
                         print(f"{red}FAILED{reset} {test['nodeid']}")
             
-            print(f"{red}{bold}{total_failed} failed{reset}, {green}{total_passed} passed{reset} {red}in {total_time:.2f}s{reset}")
+            if total_failed == 0:
+                print(f"{green}{bold}{total_passed} passed{reset} {green}in {total_time:.2f}s{reset}")
+            else:
+                print(f"{red}{bold}{total_failed} failed{reset}, {green}{total_passed} passed{reset} {red}in {total_time:.2f}s{reset}")
             
             return 1
 
