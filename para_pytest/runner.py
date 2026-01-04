@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import json
 import os
@@ -10,7 +11,7 @@ from typing import List, Tuple
 import shutil
 
 
-class ParallelPytestRunner:
+class ParaPytestRunner:
     """
     Pytest runner that chunks tests and runs in parallel for faster CLI testing
     """
@@ -183,7 +184,6 @@ class ParallelPytestRunner:
             return 1
 
     def run(self):
-        """Main entry point"""
         tests = self.collect_tests()
         
         if not tests:
@@ -196,7 +196,24 @@ class ParallelPytestRunner:
 
         return exit_code
 
+def main():
+    parser = argparse.ArgumentParser(description="Run pytest tests in parallel chunks")
+    parser.add_argument(
+        "--chunks",
+        type=int,
+        default=4,
+        help="Number of parallel chunks to divide tests into (default: 4)"
+    )
+    parser.add_argument(
+        "--path",
+        type=str,
+        default='.',
+        help="Path to tests (default: current directory)"
+    )
+
+    args = parser.parse_args()
+    runner = ParaPytestRunner(chunks=args.chunks, pytest_args=['tests/'])
+    sys.exit(runner.run())
 
 if __name__ == "__main__":
-    runner = ParallelPytestRunner(pytest_args=['tests/'])
-    runner.run()
+    main()
