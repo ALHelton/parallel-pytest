@@ -19,7 +19,7 @@ para-pytest
 # Specify number of chunks
 para-pytest --chunks 8
 
-# Specify test path (default '.')
+# Specify test path
 para-pytest --path tests/
 ```
 
