@@ -23,7 +23,19 @@ class ParaPytestRunner:
 
     def collect_tests(self) -> List[str]:
         cmd = ["pytest", "--collect-only", "-q"] + self.pytest_args
-        collected = subprocess.run(cmd, capture_output=True, text=True)
+        
+        # Prevent line wrapping in pytest output
+        env = os.environ.copy()
+        env['COLUMNS'] = '9999'
+        env['LINES'] = '9999'
+        
+        collected = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            env=env,
+            # Disable TTY to prevent terminal-specific formatting
+        )
         
         if collected.returncode != 0 and collected.returncode != 5:
             if len(collected.stderr) > 0:
@@ -35,13 +47,12 @@ class ParaPytestRunner:
         tests = []
         for line in collected.stdout.split('\n'):
             line = line.strip()
-            # Skip empty lines, separators, and summary lines
-            if not line or line.startswith('=') or line.startswith('-'):
+            if not line or ' collected' in line or ' passed' in line:
                 continue
-            # Look for test items (contain ::) and don't look like summary text
-            if '::' in line and ' collected' not in line and ' passed' not in line:
+            if '::' in line:
                 tests.append(line)
         
+        print(f"Collected {len(tests)} tests")
         return tests
     
     
@@ -103,6 +114,7 @@ class ParaPytestRunner:
 
     async def run_all_chunks(self, test_chunks: List[List[str]]):
         """Run all test chunks concurrently"""
+        print(f"\nRunning tests...")
 
         time_start = time.time()
         
