@@ -22,29 +22,26 @@ class ParaPytestRunner:
 
 
     def collect_tests(self) -> List[str]:
-        # Get list of all tests from pytest they can be divided into parallel chunks
         cmd = ["pytest", "--collect-only", "-q"] + self.pytest_args
-
-        # Run pytest collection and capture the output as text
         collected = subprocess.run(cmd, capture_output=True, text=True)
-
-        if collected.returncode  != 0 and collected.returncode != 5:
+        
+        if collected.returncode != 0 and collected.returncode != 5:
             if len(collected.stderr) > 0:
                 print(f"Error Collecting Tests:\n{collected.stderr}")
             else:
                 print("Error Collecting Tests. Process Exited.")
             sys.exit(1)
-
-
-        # # parse collected tests text
+        
         tests = []
         for line in collected.stdout.split('\n'):
             line = line.strip()
-            # Look for lines that are test items (usually contain "::")
-            if '::' in line and not line.startswith('='):
-                test_item = line.split()[0]
-                tests.append(test_item)
-
+            # Skip empty lines, separators, and summary lines
+            if not line or line.startswith('=') or line.startswith('-'):
+                continue
+            # Look for test items (contain ::) and don't look like summary text
+            if '::' in line and ' collected' not in line and ' passed' not in line:
+                tests.append(line)
+        
         return tests
     
     
