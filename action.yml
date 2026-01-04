@@ -1,0 +1,32 @@
+name: 'Para-Pytest'
+description: 'Run pytest tests in parallel chunks for faster CI execution'
+branding:
+  icon: 'layers'
+  color: 'green'
+
+inputs:
+  chunks:
+    description: 'Number of chunks to split tests into'
+    required: false
+    default: '4'
+  path: 
+    description: 'Path to the tests directory'
+    required: false
+    default: '.'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install para-pytest
+      run: pip install para-pytest
+      shell: bash
+
+    - name: Run tests in parallel
+      run: para-pytest --chunks ${{ inputs.chunks }} --path ${{ inputs.path }}
+      shell: bash
+  
