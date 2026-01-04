@@ -212,7 +212,7 @@ def main():
     )
 
     args = parser.parse_args()
-    runner = ParaPytestRunner(chunks=args.chunks, pytest_args=['tests/'])
+    runner = ParaPytestRunner(chunks=args.chunks, pytest_args=[args.path])
     sys.exit(runner.run())
 
 if __name__ == "__main__":
