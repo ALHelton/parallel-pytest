@@ -42,8 +42,7 @@ class ParaPytestRunner:
             line = line.strip()
             # Look for lines that are test items (usually contain "::")
             if '::' in line and not line.startswith('='):
-                # get the test path only
-                test_item = line.split()[0] if ' ' in line else line
+                test_item = line.split()[0]
                 tests.append(test_item)
 
         return tests
