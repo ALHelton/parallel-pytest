@@ -1,0 +1,21 @@
+# Example pyproject.toml configuration for para-pytest
+# Copy the [tool.para-pytest] section to your existing pyproject.toml
+
+[tool.para-pytest]
+serial_patterns = [
+    # Database and migration tests
+    "**/test_database_*",
+    "**/test_migration_*",
+    "**/test_schema_*",
+    
+    # Integration tests
+    "**/test_integration_*",
+    "tests/integration/**",
+    
+    # E2E tests
+    "tests/e2e/**",
+    
+    # Tests with shared state
+    "**/test_shared_*",
+]
+
