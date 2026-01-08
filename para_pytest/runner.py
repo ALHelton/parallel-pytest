@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import fnmatch
 import json
 import os
 import re
@@ -7,7 +8,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 import shutil
 
 
@@ -16,9 +17,76 @@ class ParaPytestRunner:
     Pytest runner that chunks tests and runs in parallel for faster CLI testing
     """
 
-    def __init__(self, chunks: int = 4, pytest_args: List[str] = None):
+    def __init__(self, chunks: int = 4, pytest_args: List[str] = None, debug: bool = False, serial_patterns: List[str] = None):
         self.chunks = chunks
         self.pytest_args = pytest_args or []
+        self.debug = debug
+        
+        # Load serial patterns from pyproject.toml or use explicit patterns
+        if serial_patterns is not None:
+            self.serial_patterns = serial_patterns
+        else:
+            self.serial_patterns = self._load_serial_patterns()
+        
+        if self.debug and self.serial_patterns:
+            print(f"Serial patterns: {self.serial_patterns}")
+
+
+    def _load_serial_patterns(self) -> List[str]:
+        """Load serial patterns from pyproject.toml [tool.para-pytest] section"""
+        
+        if not os.path.exists('pyproject.toml'):
+            return []
+        
+        try:
+            with open('pyproject.toml', 'r') as f:
+                content = f.read()
+            
+            patterns = []
+            in_section = False
+            in_array = False
+            
+            for line in content.split('\n'):
+                line = line.strip()
+                
+                if line.startswith('[tool.para-pytest]'):
+                    in_section = True
+                    continue
+                elif line.startswith('[') and in_section:
+                    break
+                
+                if in_section and 'serial_patterns' in line and '=' in line:
+                    in_array = True
+                    if '[' in line and ']' in line:
+                        patterns.extend(self._parse_toml_array(line[line.index('['):line.index(']')+1]))
+                        in_array = False
+                    elif '[' in line:
+                        patterns.extend(self._parse_toml_array(line))
+                    continue
+                
+                if in_array:
+                    if ']' in line:
+                        patterns.extend(self._parse_toml_array(line.split(']')[0]))
+                        in_array = False
+                    else:
+                        patterns.extend(self._parse_toml_array(line))
+            
+            if patterns and self.debug:
+                print(f"Loaded {len(patterns)} serial patterns from pyproject.toml")
+            
+            return patterns
+            
+        except Exception as e:
+            if self.debug:
+                print(f"Warning: Could not parse pyproject.toml: {e}")
+            return []
+
+
+    def _parse_toml_array(self, text: str) -> List[str]:
+        """Extract quoted strings from TOML array"""
+        import re
+        matches = re.findall(r'["\']([^"\']+)["\']', text)
+        return [m.strip() for m in matches if m.strip()]
 
 
     def collect_tests(self) -> List[str]:
@@ -34,7 +102,6 @@ class ParaPytestRunner:
             capture_output=True,
             text=True,
             env=env,
-            # Disable TTY to prevent terminal-specific formatting
         )
         
         if collected.returncode != 0 and collected.returncode != 5:
@@ -57,31 +124,51 @@ class ParaPytestRunner:
     
     
     def chunk_tests(self, tests: List[str]) -> List[List[str]]:
-        """Split tests into roughly equal chunks"""
+        """Split tests into equal chunks, separating serial tests"""
         if not tests:
             return []
         
-        # Divide tests evenly across chunks, minimum 1 test per chunk
-        chunk_size = max(1, len(tests) // self.chunks)
+        parallel_tests = []
+        serial_tests = []
+        
+        for test in tests:
+            if any(fnmatch.fnmatch(test, pattern) for pattern in self.serial_patterns):
+                serial_tests.append(test)
+            else:
+                parallel_tests.append(test)
+        
+        if serial_tests:
+            yellow = '\033[33m'
+            reset = '\033[0m'
+            print(f"{yellow}ℹ️  {len(serial_tests)} tests configured to run serially{reset}")
+            if self.debug:
+                for pattern in self.serial_patterns:
+                    matching = [t for t in serial_tests if fnmatch.fnmatch(t, pattern)]
+                    if matching:
+                        print(f"   Pattern '{pattern}': {len(matching)} tests")
+        
+        chunk_size = max(1, len(parallel_tests) // self.chunks)
         chunks = []
 
-        for i in range(0, len(tests), chunk_size):
-            chunk = tests[i:i + chunk_size]
+        for i in range(0, len(parallel_tests), chunk_size):
+            chunk = parallel_tests[i:i + chunk_size]
             if chunk:
                 chunks.append(chunk)
 
-        # If there are more chunks than requested caused by rounding, merge the last ones
         while len(chunks) > self.chunks:
             chunks[-2].extend(chunks[-1])
             chunks.pop()
         
+        if serial_tests:
+            chunks.append(serial_tests)
+        
         return chunks
     
 
-    async def run_chunk(self, tests: List[str]) -> Tuple[int, str, str]:
+    async def run_chunk(self, tests: List[str]) -> Tuple[int, dict]:
         """Run a single chunk of tests asynchronously"""
 
-        temp_file = tempfile.NamedTemporaryFile(mode='w' ,delete=False, suffix='.json')
+        temp_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json')
         temp_file.close()
 
         cmd = [
@@ -112,87 +199,142 @@ class ParaPytestRunner:
         return process.returncode, report
     
 
-    async def run_all_chunks(self, test_chunks: List[List[str]]):
-        """Run all test chunks concurrently"""
-        print(f"\nRunning tests...")
-
-        time_start = time.time()
+    def validate_execution(self, collected_tests: List[str], results: List[Tuple[int, dict]]) -> Dict:
+        """Validate all tests were executed and return statistics"""
         
-        tasks = []
-        for chunk in test_chunks:
-            tasks.append(self.run_chunk(chunk))
+        executed_tests = set()
+        failed_tests = []
+        passed_tests = []
+        skipped_tests = []
+        error_tests = []
+        
+        for _, report in results:
+            for test in report.get('tests', []):
+                nodeid = test['nodeid']
+                executed_tests.add(nodeid)
+                
+                outcome = test['outcome']
+                if outcome == 'passed':
+                    passed_tests.append(nodeid)
+                elif outcome == 'failed':
+                    failed_tests.append(nodeid)
+                elif outcome == 'skipped':
+                    skipped_tests.append(nodeid)
+                elif outcome == 'error':
+                    error_tests.append(nodeid)
+        
+        missing_tests = set(collected_tests) - executed_tests
+        
+        return {
+            'collected': len(collected_tests),
+            'executed': len(executed_tests),
+            'passed': passed_tests,
+            'failed': failed_tests,
+            'skipped': skipped_tests,
+            'errors': error_tests,
+            'missing': list(missing_tests)
+        }
 
-        results = await asyncio.gather(*tasks)
 
-        all_passed = True
-        all_failures = []
-        total_passed = 0
-        total_failed = 0
-
+    def print_test_summary(self, stats: Dict, results: List[Tuple[int, dict]], total_time: float) -> int:
+        """Print final test summary and return exit code"""
+        
         cyan = '\033[36m'
         bold = '\033[1m'
         red = '\033[31m'
         green = '\033[32m'
+        yellow = '\033[33m'
         reset = '\033[0m'
-
+        term_width = shutil.get_terminal_size().columns
+        
+        if stats['missing']:
+            print(f"\n{red}⚠️  CRITICAL: {len(stats['missing'])} tests were NEVER executed!{reset}")
+            if self.debug or len(stats['missing']) <= 10:
+                print(f"{red}Missing tests:{reset}")
+                for test in sorted(stats['missing']):
+                    print(f"  {red}- {test}{reset}")
+            else:
+                print(f"{red}Missing tests (showing first 10):{reset}")
+                for test in sorted(stats['missing'][:10]):
+                    print(f"  {red}- {test}{reset}")
+                print(f"  {red}... and {len(stats['missing']) - 10} more (use --debug to see all){reset}")
+            print()
+        
+        all_passed = len(stats['failed']) == 0 and len(stats['errors']) == 0 and not stats['missing']
+        
+        if all_passed:
+            print(f"{green}{bold}{len(stats['passed'])} passed{reset}{green} in {total_time:.2f}s{reset}")
+            return 0
+        
+        # Print failure details
+        self._print_failure_details(results, term_width)
+        
+        # Print failed test summary
+        print(f"{cyan}{bold}{'=' * ((term_width - 24) // 2)} short test summary info {'=' * ((term_width - 24) // 2)}{reset}\n")
+        
         for code, report in results:
-            summary = report.get('summary', {})
-            total_passed += summary.get('passed', 0)
-            total_failed += summary.get('failed', 0)
+            for test in report.get('tests', []):
+                if test['outcome'] == 'failed':
+                    print(f"{red}FAILED{reset} {test['nodeid']}")
+                elif test['outcome'] == 'error':
+                    print(f"{red}ERROR{reset} {test['nodeid']}")
+        
+        # Print summary statistics
+        summary_parts = []
+        if len(stats['failed']) > 0:
+            summary_parts.append(f"{red}{bold}{len(stats['failed'])} failed{reset}")
+        if len(stats['errors']) > 0:
+            summary_parts.append(f"{red}{len(stats['errors'])} errors{reset}")
+        if len(stats['passed']) > 0:
+            summary_parts.append(f"{green}{len(stats['passed'])} passed{reset}")
+        if len(stats['skipped']) > 0:
+            summary_parts.append(f"{yellow}{len(stats['skipped'])} skipped{reset}")
+        if stats['missing']:
+            summary_parts.append(f"{red}{len(stats['missing'])} not executed{reset}")
+        
+        print(f"\n{', '.join(summary_parts)} {red}in {total_time:.2f}s{reset}")
+        return 1
 
+
+    def _print_failure_details(self, results: List[Tuple[int, dict]], term_width: int):
+        """Extract and print failure details from test results"""
+        
+        for code, report in results:
             if code != 0:
-                all_passed = False
-
                 colored_output = report.get('colored_output', '')
                 if 'FAILURES' in colored_output:
                     start = colored_output.find('FAILURES')
                     end = colored_output.find('short test summary')
                     if end != -1:
                         failure_content = colored_output[start:end].strip()
-                        lines = []
-                        for line in failure_content.split('\n'):
-                            if 'FAILURES' not in line and '===' not in line:
-                                lines.append(line)
-                        all_failures.append('\n'.join(lines))
+                        lines = [line for line in failure_content.split('\n') 
+                                if 'FAILURES' not in line and '===' not in line]
+                        failure_text = '\n'.join(lines)
+                        
+                        adjusted = re.sub(
+                            r'_+\s+(\S+)\s+_+',
+                            lambda m: '_' * ((term_width - len(m.group(1)) - 2) // 2) + ' ' + m.group(1) + ' ' + '_' * ((term_width - len(m.group(1)) - 2) // 2),
+                            failure_text
+                        )
+                        print(adjusted)
+                        print()
 
+
+    async def run_all_chunks(self, test_chunks: List[List[str]]):
+        """Run all test chunks concurrently"""
+        print(f"\nRunning tests...")
+
+        time_start = time.time()
+        
+        all_collected_tests = [test for chunk in test_chunks for test in chunk]
+        
+        tasks = [self.run_chunk(chunk) for chunk in test_chunks]
+        results = await asyncio.gather(*tasks)
+        
+        stats = self.validate_execution(all_collected_tests, results)
+        
         total_time = time.time() - time_start
-
-        # Get terminal width
-        term_width = shutil.get_terminal_size().columns
-
-        if all_passed:
-            green = '\033[32m'
-            reset = '\033[0m'
-            print(f"{green}{bold}{total_passed} passed{reset}{green} in {total_time:.2f}s{reset}")
-            return 0
-        else:
-            for failure in all_failures:
-                # Replace with dynamic underscores - terminal width
-                adjusted = re.sub(
-                    r'_+\s+(\S+)\s+_+',
-                    lambda m: '_' * ((term_width - len(m.group(1)) - 2) // 2) + ' ' + m.group(1) + ' ' + '_' * ((term_width - len(m.group(1)) - 2) // 2),
-                    failure
-                )
-                print(adjusted)
-                print()
-            
-            summary_text = " short test summary info "
-            padding = (term_width - len(summary_text)) // 2
-            
-            print(f"{cyan}{bold}{'=' * padding}{summary_text}{'=' * padding}{reset}\n")
-            
-            # Print failed test list from JSON
-            for code, report in results:
-                for test in report.get('tests', []):
-                    if test['outcome'] == 'failed':
-                        print(f"{red}FAILED{reset} {test['nodeid']}")
-            
-            if total_failed == 0:
-                print(f"{green}{bold}{total_passed} passed{reset} {green}in {total_time:.2f}s{reset}")
-            else:
-                print(f"{red}{bold}{total_failed} failed{reset}, {green}{total_passed} passed{reset} {red}in {total_time:.2f}s{reset}")
-            
-            return 1
+        return self.print_test_summary(stats, results, total_time)
 
     def run(self):
         tests = self.collect_tests()
@@ -203,12 +345,18 @@ class ParaPytestRunner:
         
         test_chunks = self.chunk_tests(tests)
         
-        exit_code = asyncio.run(self.run_all_chunks(test_chunks))
-
-        return exit_code
+        if self.debug:
+            print(f"\nSplit into {len(test_chunks)} chunks:")
+            for i, chunk in enumerate(test_chunks, 1):
+                print(f"  Chunk {i}: {len(chunk)} tests")
+        
+        return asyncio.run(self.run_all_chunks(test_chunks))
 
 def main():
-    parser = argparse.ArgumentParser(description="Run pytest tests in parallel chunks")
+    parser = argparse.ArgumentParser(
+        description="Run pytest tests in parallel chunks",
+        epilog="Configure serial patterns in pyproject.toml: [tool.para-pytest] serial_patterns = [...]"
+    )
     parser.add_argument(
         "--chunks",
         type=int,
@@ -221,9 +369,18 @@ def main():
         default='.',
         help="Path to tests (default: current directory)"
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug output showing missing tests and chunking info"
+    )
 
     args = parser.parse_args()
-    runner = ParaPytestRunner(chunks=args.chunks, pytest_args=[args.path])
+    runner = ParaPytestRunner(
+        chunks=args.chunks, 
+        pytest_args=[args.path], 
+        debug=args.debug
+    )
     sys.exit(runner.run())
 
 if __name__ == "__main__":
