@@ -105,7 +105,10 @@ exit_code = runner.run()
 runner = ParaPytestRunner(
     chunks=4,
     pytest_args=['tests/'],
-    serial_patterns=['**/test_database_*', '**/test_integration_*']
+    serial_patterns=[
+        'tests/unit/test_database.py',  # Simple file path
+        '**/test_integration_*'          # Wildcard pattern
+    ]
 )
 exit_code = runner.run()
 ```
@@ -120,17 +123,29 @@ Some tests can't run in parallel (e.g., database tests, integration tests with s
 ```toml
 [tool.para-pytest]
 serial_patterns = [
+    # Simple file paths (automatically matches all tests in the file)
+    "app/tests/unit/test_database.py",
+    "app/tests/unit/routes/test_organizations.py",
+    
+    # Wildcard patterns
     "**/test_database_*",
     "**/test_migration_*",
-    "**/test_integration_*",
     "tests/e2e/**"
 ]
 ```
 
-**Pattern examples:**
-- `**/test_database_*` - Any test file starting with `test_database_` anywhere in your project
-- `tests/e2e/**` - All tests in the `tests/e2e/` directory and subdirectories
-- `**/test_*_integration.py` - Any test file ending with `_integration.py`
+**Pattern Matching:**
+
+Para-pytest automatically handles test node IDs (like `test_file.py::test_name`). You can use:
+
+1. **Simple file paths** - No wildcards needed! 
+   - `"app/tests/unit/test_database.py"` matches all tests in that file
+   - Automatically expands to match `test_database.py::test_function`
+
+2. **Wildcard patterns** - For matching multiple files
+   - `"**/test_database_*"` - Any test file starting with `test_database_`
+   - `"tests/e2e/**"` - All tests in `tests/e2e/` directory and subdirectories
+   - `"**/test_*_integration.py"` - Any test file ending with `_integration.py`
 
 That's it! No external dependencies required - the configuration is parsed using built-in Python modules.
 
@@ -180,10 +195,16 @@ para-pytest --path tests/ --debug
 
 ### Common Patterns for Serial Tests
 
-- Database tests: `**/test_database_*`, `**/test_migration_*`
-- Integration tests: `**/test_integration_*`, `tests/integration/**`
-- E2E tests: `tests/e2e/**`, `tests/functional/**`
+- Database tests: 
+  - `"tests/unit/test_database.py"` (specific file)
+  - `"**/test_database_*"` (any file starting with `test_database_`)
+- Integration tests: 
+  - `"**/test_integration_*"`, `"tests/integration/**"`
+- E2E tests: 
+  - `"tests/e2e/**"`, `"tests/functional/**"`
 - Any test modifying shared resources
+
+**Note:** For specific files, you don't need wildcards - just use the file path!
 
 
 ## Requirements
