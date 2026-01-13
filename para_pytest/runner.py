@@ -89,6 +89,40 @@ class ParaPytestRunner:
         return [m.strip() for m in matches if m.strip()]
 
 
+    def _matches_pattern_single(self, test: str, pattern: str) -> bool:
+        """
+        Check if a test matches a single pattern.
+        Handles both exact patterns and file patterns.
+        
+        For patterns ending in .py (with or without wildcards):
+        - Tries direct match first
+        - If no :: in pattern, tries with ::* appended to match test node IDs
+        """
+        # Try direct match first
+        if fnmatch.fnmatch(test, pattern):
+            return True
+        
+        # If pattern ends with .py and doesn't contain ::,
+        # automatically try matching with ::* appended to handle test node IDs
+        if pattern.endswith('.py') and '::' not in pattern:
+            if fnmatch.fnmatch(test, f"{pattern}::*"):
+                return True
+        
+        return False
+
+
+    def _matches_serial_pattern(self, test: str) -> bool:
+        """
+        Check if a test matches any serial pattern.
+        Handles both exact patterns and file patterns.
+        
+        For patterns ending in .py without wildcards, tries:
+        1. Exact match with pattern
+        2. Match with pattern::* (to match test node IDs)
+        """
+        return any(self._matches_pattern_single(test, pattern) for pattern in self.serial_patterns)
+
+
     def collect_tests(self) -> List[str]:
         cmd = ["pytest", "--collect-only", "-q"] + self.pytest_args
         
@@ -132,7 +166,7 @@ class ParaPytestRunner:
         serial_tests = []
         
         for test in tests:
-            if any(fnmatch.fnmatch(test, pattern) for pattern in self.serial_patterns):
+            if self._matches_serial_pattern(test):
                 serial_tests.append(test)
             else:
                 parallel_tests.append(test)
@@ -143,7 +177,7 @@ class ParaPytestRunner:
             print(f"{yellow}ℹ️  {len(serial_tests)} tests configured to run serially{reset}")
             if self.debug:
                 for pattern in self.serial_patterns:
-                    matching = [t for t in serial_tests if fnmatch.fnmatch(t, pattern)]
+                    matching = [t for t in serial_tests if self._matches_pattern_single(t, pattern)]
                     if matching:
                         print(f"   Pattern '{pattern}': {len(matching)} tests")
         
